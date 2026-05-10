@@ -179,25 +179,44 @@ def make_request(encrypted_uid, server_name, token):
             'ReleaseVersion': "OB53"
         }
         
-        logger.debug(f"Headers set, sending request...")
+        logger.debug(f"Headers: {list(headers.keys())}")
+        logger.debug(f"Making POST request...")
         
         response = requests.post(url, data=edata, headers=headers, verify=False, timeout=20)
         
         logger.info(f"📊 Response status: {response.status_code}")
+        logger.debug(f"Response headers: {dict(response.headers)}")
+        logger.debug(f"Response size: {len(response.content)} bytes")
         
         if response.status_code != 200:
             logger.error(f"❌ Server returned {response.status_code}")
-            logger.error(f"Response: {response.text[:200]}")
+            try:
+                logger.error(f"Response body: {response.text[:500]}")
+            except:
+                logger.error(f"Response (hex): {response.content.hex()[:100]}")
             return None
         
-        logger.debug(f"Response received: {len(response.content)} bytes")
+        logger.debug(f"✅ Got 200 response, parsing protobuf...")
         
-        binary = bytes.fromhex(response.content.hex())
-        items = like_count_pb2.Info()
-        items.ParseFromString(binary)
-        
-        logger.info(f"✅ Player info fetched successfully")
-        return items
+        try:
+            binary = bytes.fromhex(response.content.hex())
+            logger.debug(f"Binary data length: {len(binary)} bytes")
+            
+            items = like_count_pb2.Info()
+            items.ParseFromString(binary)
+            
+            logger.debug(f"Protobuf parsed successfully")
+            
+            data = json.loads(MessageToJson(items))
+            logger.debug(f"Converted to JSON: {json.dumps(data)[:200]}")
+            
+            logger.info(f"✅ Player info fetched successfully")
+            return items
+            
+        except Exception as parse_error:
+            logger.error(f"❌ Protobuf parsing error: {parse_error}", exc_info=True)
+            logger.error(f"Raw response (first 200 bytes): {response.content[:200]}")
+            return None
         
     except requests.exceptions.Timeout:
         logger.error(f"❌ Request timeout (20s)")
