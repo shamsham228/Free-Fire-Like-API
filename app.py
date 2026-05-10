@@ -32,23 +32,23 @@ CACHE_FILE = "like_cache.json"
 LIKE_LIMITS = {
     "level_1_2": {
         "daily_likes": 20,
-        "likes_per_uid": 5,
-        "requests_per_call": 5
+        "likes_per_uid": 999,
+        "requests_per_call": 1
     },
     "level_3_10": {
         "daily_likes": 50,
-        "likes_per_uid": 10,
-        "requests_per_call": 10
+        "likes_per_uid": 999,
+        "requests_per_call": 1
     },
     "level_11_30": {
         "daily_likes": 150,
-        "likes_per_uid": 30,
-        "requests_per_call": 30
+        "likes_per_uid": 999,
+        "requests_per_call": 1
     },
     "level_30_plus": {
         "daily_likes": 300,
-        "likes_per_uid": 50,
-        "requests_per_call": 50
+        "likes_per_uid": 999,
+        "requests_per_call": 1
     }
 }
 
@@ -245,19 +245,19 @@ def decode_protobuf(binary):
         logger.error(f"Unexpected error during protobuf decoding: {e}")
         return None
 
-def check_daily_limit(token_id):
+def has_liked_today(token_id, target_uid):
+    """Check if guest account already liked this UID today"""
     cache = load_cache()
     today = datetime.now().strftime("%Y-%m-%d")
-    key = f"{token_id}_{today}"
-    if key not in cache:
-        cache[key] = 0
-    return cache[key], key
+    key = f"{token_id}_{target_uid}_{today}"
+    return cache.get(key, False)
 
-def update_cache(key, likes_added):
+def mark_liked(token_id, target_uid):
+    """Mark that this guest account liked this UID"""
     cache = load_cache()
-    if key not in cache:
-        cache[key] = 0
-    cache[key] += likes_added
+    today = datetime.now().strftime("%Y-%m-%d")
+    key = f"{token_id}_{target_uid}_{today}"
+    cache[key] = True
     save_cache(cache)
 
 @app.route('/', methods=['GET'])
@@ -268,7 +268,7 @@ def index():
         "status": "API is running",
         "endpoints": "/like?uid=<uid>&server_name=<server_name>",
         "example": "/like?uid=123456789&server_name=IND",
-        "note": "Level 1-2 accounts: 20 likes/day max"
+        "note": "1 like per guest account per target UID per day"
     })
 
 @app.route('/health', methods=['GET'])
@@ -354,85 +354,122 @@ def handle_requests():
     uid = request.args.get("uid")
     if not uid:
         return jsonify({"error": "UID is required"}), 400
+    
     try:
         tokens = load_tokens()
         if tokens is None or not tokens:
             return jsonify({
                 "error": "Failed to load tokens",
-                "message": "No valid tokens found. tokens.json is empty",
+                "message": "No valid tokens found",
                 "status": 0
             }), 500
+        
         valid_tokens = [t for t in tokens if not is_token_expired(t.get('token', ''))]
         if not valid_tokens:
             return jsonify({
                 "error": "All tokens expired",
-                "message": "Please update tokens",
                 "status": 0
             }), 400
+        
         token = valid_tokens[0]['token']
         token_info = get_token_info(token)
+        
         if not token_info:
             return jsonify({"error": "Cannot decode token", "status": 0}), 500
+        
         server_name = request.args.get("server_name", "").upper()
         if not server_name:
             server_name = token_info.get('lock_region', 'IND').upper()
+        
         if not server_name:
             return jsonify({"error": "server_name could not be determined"}), 400
+        
         encrypted_uid = enc(uid)
         if encrypted_uid is None:
             return jsonify({"error": "Encryption of UID failed"}), 500
+
         before = make_request(encrypted_uid, server_name, token)
         if before is None:
             return jsonify({
                 "error": "Failed to retrieve player info",
-                "message": "Invalid UID or server error",
                 "status": 0
             }), 500
+        
         data_before = json.loads(MessageToJson(before))
         account_info_before = data_before.get('AccountInfo', {})
         before_like = int(account_info_before.get('Likes', 0) or 0)
         player_level = int(account_info_before.get('Level', 0) or 0)
         player_uid = int(account_info_before.get('UID', 0) or 0)
         player_name = str(account_info_before.get('PlayerNickname', 'Unknown'))
+        
         logger.info(f"Target: {player_uid}, Level: {player_level}, Before: {before_like}")
+        
         limit_config = get_like_limit(player_level)
         request_count = limit_config['requests_per_call']
         max_daily_likes = limit_config['daily_likes']
-        max_likes_per_uid = limit_config['likes_per_uid']
-        token_id = token_info.get('account_id', 'unknown')
-        current_daily_likes, cache_key = check_daily_limit(token_id)
+        
+        # Get guest account ID
+        token_account_id = token_info.get('account_id')
+        
+        # Check if this guest account already liked this UID today
+        if has_liked_today(token_account_id, player_uid):
+            return jsonify({
+                "error": "Already liked",
+                "message": f"This guest account already liked this UID today. Use another guest account or try tomorrow.",
+                "status": 0,
+                "guest_account_id": token_account_id,
+                "target_uid": player_uid
+            }), 429
+        
+        # Check daily limit (total likes from this guest account today)
+        cache = load_cache()
+        today = datetime.now().strftime("%Y-%m-%d")
+        daily_count_key = f"daily_{token_account_id}_{today}"
+        current_daily_likes = cache.get(daily_count_key, 0)
+        
         if current_daily_likes >= max_daily_likes:
             return jsonify({
-                "error": "Daily like limit reached",
-                "message": f"Sent {current_daily_likes}/{max_daily_likes} today",
-                "status": 0,
-                "daily_limit": max_daily_likes,
-                "current_likes": current_daily_likes
+                "error": "Daily limit reached",
+                "message": f"Guest account has sent {current_daily_likes}/{max_daily_likes} likes today",
+                "status": 0
             }), 429
-        if before_like + request_count > max_likes_per_uid:
-            request_count = max(1, max_likes_per_uid - before_like)
-            logger.info(f"Adjusted request count to {request_count}")
+        
+        # Determine URL
         if server_name == "IND":
             url = "https://client.ind.freefiremobile.com/LikeProfile"
         elif server_name in {"BR", "US", "SAC", "NA"}:
             url = "https://client.us.freefiremobile.com/LikeProfile"
         else:
             url = "https://clientbp.ggpolarbear.com/LikeProfile"
-        logger.info(f"Sending {request_count} likes...")
+
+        logger.info(f"Sending {request_count} like(s)...")
         success_count = asyncio.run(send_multiple_requests(uid, server_name, url, request_count))
+        
         time.sleep(2)
+        
         after = make_request(encrypted_uid, server_name, token)
         if after is None:
             return jsonify({
                 "error": "Failed to check likes after request",
                 "status": 0
             }), 500
+        
         data_after = json.loads(MessageToJson(after))
         account_info_after = data_after.get('AccountInfo', {})
         after_like = int(account_info_after.get('Likes', 0) or 0)
+        
         like_given = after_like - before_like
-        update_cache(cache_key, like_given)
+        
         status = 1 if like_given > 0 else 2
+        
+        # Mark that this guest account liked this UID
+        if like_given > 0:
+            mark_liked(token_account_id, player_uid)
+            
+            # Update daily total count for this guest account
+            cache[daily_count_key] = current_daily_likes + like_given
+            save_cache(cache)
+        
         response = {
             "credit": "https://t.me/paglu_dev",
             "LikesGivenByAPI": like_given,
@@ -443,17 +480,20 @@ def handle_requests():
             "Region": server_name,
             "UID": player_uid,
             "status": status,
-            "message": "✅ Likes sent successfully!" if status == 1 else "❌ Failed to send likes",
-            "daily_limit_info": {
-                "max_daily_likes": max_daily_likes,
+            "message": "✅ Like sent successfully!" if status == 1 else "❌ Failed to send like",
+            "guest_account": {
+                "id": token_account_id,
+                "nickname": token_info.get('nickname'),
                 "likes_sent_today": current_daily_likes + like_given,
+                "daily_limit": max_daily_likes,
                 "remaining": max_daily_likes - (current_daily_likes + like_given)
             },
-            "account_level": player_level,
-            "max_likes_per_uid": max_likes_per_uid
+            "account_level": player_level
         }
+        
         logger.info(f"Response: Status={status}, Likes={like_given}")
         return jsonify(response)
+        
     except Exception as e:
         logger.error(f"Error: {e}", exc_info=True)
         return jsonify({"error": str(e), "status": 0}), 500
