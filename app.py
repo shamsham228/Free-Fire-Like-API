@@ -167,37 +167,60 @@ def make_request(encrypted_uid, server_name, token):
         url = get_server_url(server_name, "GetPlayerPersonalShow")
         
         logger.info(f"📤 Making request to Free Fire: {url}")
+        logger.info(f"🔑 Token (first 30 chars): {token[:30]}...")
         
         edata = bytes.fromhex(encrypted_uid)
         logger.debug(f"Converted encrypted data: {len(edata)} bytes")
         
         headers = {
             'User-Agent': "Dalvik/2.1.0 (Linux; U; Android 9; ASUS_Z01QD Build/PI)",
-            'Authorization': f"Bearer {token[:50]}...",
+            'Authorization': f"Bearer {token}",  # Use full token, not truncated
             'Content-Type': "application/x-www-form-urlencoded",
             'X-Unity-Version': "2018.4.11f1",
             'ReleaseVersion': "OB53"
         }
         
-        logger.debug(f"Headers: {list(headers.keys())}")
-        logger.debug(f"Making POST request...")
+        logger.info(f"📤 Sending POST with {len(edata)} bytes of data...")
         
+        # Try the request
         response = requests.post(url, data=edata, headers=headers, verify=False, timeout=20)
         
         logger.info(f"📊 Response status: {response.status_code}")
+        logger.info(f"📊 Response size: {len(response.content)} bytes")
+        
+        # Log response headers
         logger.debug(f"Response headers: {dict(response.headers)}")
-        logger.debug(f"Response size: {len(response.content)} bytes")
+        
+        # Check for error status codes
+        if response.status_code == 401:
+            logger.error(f"❌ 401 Unauthorized - Token is invalid!")
+            logger.error(f"Response: {response.text[:500]}")
+            return None
+        
+        if response.status_code == 403:
+            logger.error(f"❌ 403 Forbidden - Server blocked request!")
+            logger.error(f"Possible causes: IP banned, rate limited, or wrong credentials")
+            logger.error(f"Response: {response.text[:500]}")
+            return None
+        
+        if response.status_code == 404:
+            logger.error(f"❌ 404 Not Found - Endpoint or UID not found!")
+            logger.error(f"Response: {response.text[:500]}")
+            return None
         
         if response.status_code != 200:
             logger.error(f"❌ Server returned {response.status_code}")
-            try:
-                logger.error(f"Response body: {response.text[:500]}")
-            except:
-                logger.error(f"Response (hex): {response.content.hex()[:100]}")
+            logger.error(f"Response body: {response.text[:500] if response.text else response.content[:500]}")
             return None
         
-        logger.debug(f"✅ Got 200 response, parsing protobuf...")
+        logger.info(f"✅ Got 200 response, parsing protobuf...")
         
+        # Check if response is empty
+        if len(response.content) == 0:
+            logger.error(f"❌ Empty response content!")
+            return None
+        
+        # Try to parse protobuf
         try:
             binary = bytes.fromhex(response.content.hex())
             logger.debug(f"Binary data length: {len(binary)} bytes")
@@ -205,27 +228,38 @@ def make_request(encrypted_uid, server_name, token):
             items = like_count_pb2.Info()
             items.ParseFromString(binary)
             
-            logger.debug(f"Protobuf parsed successfully")
+            logger.info(f"✅ Protobuf parsed successfully")
             
+            # Verify we got player data
             data = json.loads(MessageToJson(items))
-            logger.debug(f"Converted to JSON: {json.dumps(data)[:200]}")
+            account_info = data.get('AccountInfo', {})
             
-            logger.info(f"✅ Player info fetched successfully")
+            if not account_info:
+                logger.error(f"❌ No AccountInfo in response!")
+                logger.error(f"Response data: {json.dumps(data)[:500]}")
+                return None
+            
+            player_uid = account_info.get('UID', 0)
+            player_name = account_info.get('PlayerNickname', '')
+            
+            logger.info(f"✅ Got player data: UID={player_uid}, Name={player_name}")
+            
             return items
             
         except Exception as parse_error:
             logger.error(f"❌ Protobuf parsing error: {parse_error}", exc_info=True)
-            logger.error(f"Raw response (first 200 bytes): {response.content[:200]}")
+            logger.error(f"Raw response (hex): {response.content.hex()[:200]}")
+            logger.error(f"Raw response (text): {response.text[:500] if response.text else 'binary'}")
             return None
         
-    except requests.exceptions.Timeout:
-        logger.error(f"❌ Request timeout (20s)")
+    except requests.exceptions.Timeout as timeout_error:
+        logger.error(f"❌ Request timeout (20s): {timeout_error}")
         return None
-    except requests.exceptions.ConnectionError as e:
-        logger.error(f"❌ Connection error: {e}")
+    except requests.exceptions.ConnectionError as conn_error:
+        logger.error(f"❌ Connection error: {conn_error}")
         return None
     except Exception as e:
-        logger.error(f"❌ Request error: {e}", exc_info=True)
+        logger.error(f"❌ Unexpected error: {e}", exc_info=True)
         return None
 
 def send_like_request(encrypted_uid, token, server_name):
