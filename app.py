@@ -334,94 +334,167 @@ def handle_like():
     
     logger.info(f"🎯 LIKE REQUEST: UID={uid}, Server={server_name}")
     
+    # Validate input
     if not uid or not uid.isdigit():
         logger.warning(f"⚠️ Invalid UID: {uid}")
-        return jsonify({"error": "Invalid UID", "status": 0}), 400
+        return jsonify({
+            "error": "Invalid UID - must be numeric",
+            "status": 0
+        }), 400
     
     try:
-        # Load tokens
+        # ===== STEP 1: LOAD TOKENS =====
+        logger.info("Step 1: Loading tokens...")
         tokens = load_tokens()
+        
         if not tokens:
             logger.error("❌ No tokens available!")
-            return jsonify({"error": "No tokens available", "status": 0}), 500
+            return jsonify({
+                "error": "No tokens available in tokens.json",
+                "status": 0
+            }), 500
         
-        # Find valid token
+        logger.info(f"✅ Loaded {len(tokens)} tokens")
+        
+        # ===== STEP 2: FIND VALID TOKEN =====
+        logger.info("Step 2: Finding valid token...")
         valid_token = None
+        
         for idx, t in enumerate(tokens):
             token = t.get('token', '')
-            if token and not is_token_expired(token):
-                valid_token = token
-                logger.info(f"✅ Using token #{idx}")
-                break
+            
+            if not token:
+                logger.debug(f"Token #{idx}: Empty")
+                continue
+            
+            if is_token_expired(token):
+                logger.debug(f"Token #{idx}: Expired")
+                continue
+            
+            valid_token = token
+            logger.info(f"✅ Using token #{idx}")
+            break
         
         if not valid_token:
-            logger.error("❌ All tokens expired!")
-            return jsonify({"error": "All tokens expired", "status": 0}), 400
+            logger.error("❌ All tokens are expired or invalid!")
+            return jsonify({
+                "error": "All tokens expired - please refresh tokens",
+                "status": 0
+            }), 400
         
-        # Encrypt UID
-        logger.info(f"🔐 Encrypting UID: {uid}")
+        # ===== STEP 3: ENCRYPT UID =====
+        logger.info("Step 3: Encrypting UID...")
         encrypted_uid = enc(uid)
+        
         if not encrypted_uid:
             logger.error("❌ Encryption failed!")
-            return jsonify({"error": "Encryption failed", "status": 0}), 500
+            return jsonify({
+                "error": "Failed to encrypt UID",
+                "status": 0
+            }), 500
         
-        # GET BEFORE
-        logger.info(f"📖 Fetching player info...")
+        logger.info(f"✅ UID encrypted: {len(encrypted_uid)} chars")
+        
+        # ===== STEP 4: GET PLAYER INFO (BEFORE) =====
+        logger.info("Step 4: Fetching player info (BEFORE)...")
         before = make_request(encrypted_uid, server_name, valid_token)
         
         if before is None:
             logger.error("❌ Failed to fetch player info!")
             return jsonify({
-                "error": "Failed to fetch player info. Check Vercel logs for details.",
+                "error": "Failed to fetch player info - UID may not exist or API error",
                 "status": 0
             }), 500
         
-        data_before = json.loads(MessageToJson(before))
-        account_info = data_before.get('AccountInfo', {})
+        logger.info("✅ Player info fetched")
         
-        before_like = int(account_info.get('Likes', 0) or 0)
-        player_uid = int(account_info.get('UID', 0) or 0)
-        player_name = str(account_info.get('PlayerNickname', 'Unknown'))
-        player_level = int(account_info.get('Level', 0) or 0)
+        # ===== STEP 5: PARSE BEFORE DATA =====
+        logger.info("Step 5: Parsing player data...")
+        try:
+            data_before = json.loads(MessageToJson(before))
+            account_info = data_before.get('AccountInfo', {})
+            
+            before_like = int(account_info.get('Likes', 0) or 0)
+            player_uid = int(account_info.get('UID', 0) or 0)
+            player_name = str(account_info.get('PlayerNickname', 'Unknown'))
+            player_level = int(account_info.get('Level', 0) or 0)
+            
+            logger.info(f"✅ Player: {player_name} (UID: {player_uid}, Level: {player_level})")
+            logger.info(f"   Likes before: {before_like}")
+            
+            if player_uid == 0:
+                logger.error(f"❌ Invalid UID returned: {player_uid}")
+                return jsonify({
+                    "error": "Invalid UID - player not found",
+                    "status": 0
+                }), 400
+            
+        except Exception as parse_error:
+            logger.error(f"❌ Failed to parse player data: {parse_error}", exc_info=True)
+            return jsonify({
+                "error": "Failed to parse player data",
+                "status": 0
+            }), 500
         
-        if player_uid == 0:
-            logger.error(f"❌ Invalid UID: {uid}")
-            return jsonify({"error": "Invalid UID", "status": 0}), 400
-        
-        logger.info(f"👤 Player: {player_name} (Level {player_level}) - Before likes: {before_like}")
-        
-        # SEND LIKE
-        logger.info(f"💌 Sending like...")
+        # ===== STEP 6: SEND LIKE =====
+        logger.info("Step 6: Sending like...")
         time.sleep(1)
+        
         like_sent = send_like_request(encrypted_uid, valid_token, server_name)
         
         if not like_sent:
-            logger.warning("⚠️ Like request may have failed")
+            logger.warning("⚠️ Like request returned false")
+        else:
+            logger.info("✅ Like sent")
         
-        # WAIT & CHECK AFTER
-        logger.info(f"⏳ Waiting 3 seconds...")
+        # ===== STEP 7: WAIT & GET PLAYER INFO (AFTER) =====
+        logger.info("Step 7: Waiting 3 seconds before checking...")
         time.sleep(3)
         
+        logger.info("Step 7b: Fetching player info (AFTER)...")
         after = make_request(encrypted_uid, server_name, valid_token)
+        
         if after is None:
-            logger.error("❌ Failed to verify like")
+            logger.error("❌ Failed to fetch player info after like")
             return jsonify({
-                "error": "Failed to verify likes",
+                "error": "Failed to verify like",
                 "status": 2,
                 "PlayerNickname": player_name,
                 "UID": player_uid,
                 "LikesbeforeCommand": before_like
             })
         
-        data_after = json.loads(MessageToJson(after))
-        after_like = int(data_after.get('AccountInfo', {}).get('Likes', 0) or 0)
+        logger.info("✅ Player info fetched (after)")
+        
+        # ===== STEP 8: PARSE AFTER DATA =====
+        logger.info("Step 8: Parsing player data (after)...")
+        try:
+            data_after = json.loads(MessageToJson(after))
+            after_like = int(data_after.get('AccountInfo', {}).get('Likes', 0) or 0)
+            
+            logger.info(f"   Likes after: {after_like}")
+            
+        except Exception as parse_error:
+            logger.error(f"❌ Failed to parse after data: {parse_error}", exc_info=True)
+            return jsonify({
+                "error": "Failed to parse after data",
+                "status": 2
+            })
+        
+        # ===== STEP 9: CALCULATE RESULT =====
+        logger.info("Step 9: Calculating result...")
         
         like_given = after_like - before_like
         status = 1 if like_given > 0 else 2
         
-        logger.info(f"✅ RESULT: Before={before_like}, After={after_like}, Given={like_given}")
+        logger.info(f"✅ FINAL RESULT:")
+        logger.info(f"   Before: {before_like}")
+        logger.info(f"   After: {after_like}")
+        logger.info(f"   Given: {like_given}")
+        logger.info(f"   Status: {status}")
         
-        return jsonify({
+        # ===== STEP 10: RETURN RESPONSE =====
+        response = {
             "status": status,
             "credit": "https://t.me/paglu_dev",
             "LikesGivenByAPI": like_given,
@@ -430,13 +503,17 @@ def handle_like():
             "PlayerNickname": player_name,
             "PlayerLevel": player_level,
             "Region": server_name,
-            "UID": player_uid
-        })
+            "UID": player_uid,
+            "message": "✅ Like sent successfully!" if status == 1 else "⚠️ Like may have failed"
+        }
+        
+        logger.info(f"✅ Returning response")
+        return jsonify(response)
         
     except Exception as e:
         logger.error(f"❌ FATAL ERROR: {e}", exc_info=True)
         return jsonify({
-            "error": f"Server error: {str(e)}",
+            "error": f"Server error: {str(e)[:100]}",
             "status": 0
         }), 500
 
