@@ -16,6 +16,7 @@ import base64
 import time
 import logging
 from datetime import datetime, timedelta
+import random
 
 app = Flask(__name__)
 
@@ -406,7 +407,8 @@ def handle_requests():
                 "status": 0
             }), 400
         
-        token = valid_tokens[0]['token']
+        import random
+token = random.choice(valid_tokens)['token']
         token_info = get_token_info(token)
         
         if not token_info:
@@ -478,9 +480,14 @@ def handle_requests():
             url = "https://clientbp.ggpolarbear.com/LikeProfile"
 
         logger.info(f"Sending {request_count} like(s)...")
-        success_count = asyncio.run(send_multiple_requests(uid, server_name, url, request_count))
-        
-        time.sleep(2)
+success_count = asyncio.run(send_multiple_requests(uid, server_name, url, request_count))
+
+if success_count == 0:
+    logger.warning("No successful requests. Waiting 5 seconds before checking...")
+    time.sleep(5)
+else:
+    logger.info(f"Successful! Waiting 3 seconds before checking likes...")
+    time.sleep(3)
         
         after = make_request(encrypted_uid, server_name, token)
         if after is None:
