@@ -160,30 +160,65 @@ async def send_request(encrypted_uid, token, url, delay=0.5):
         return False
 
 async def send_multiple_requests(uid, server_name, url, request_count):
+    """Send multiple like requests with retries"""
     try:
         region = server_name
         protobuf_message = create_protobuf_message(uid, region)
         if protobuf_message is None:
             logger.error("Failed to create protobuf message.")
             return 0
+        
         encrypted_uid = encrypt_message(protobuf_message)
         if encrypted_uid is None:
             logger.error("Encryption failed.")
             return 0
+        
         tokens = load_tokens()
         if tokens is None or len(tokens) == 0:
             logger.error("No valid tokens available.")
             return 0
-        tasks = []
-        for i in range(request_count):
-            token = tokens[i % len(tokens)]["token"]
-            delay = 0.8 + (i * 0.1)
-            tasks.append(send_request(encrypted_uid, token, url, delay=delay))
-        logger.info(f"Sending {request_count} like requests with delays...")
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        success_count = sum(1 for r in results if r is True)
-        logger.info(f"Successful requests: {success_count}/{request_count}")
+        
+        success_count = 0
+        
+        # Try each token until one succeeds
+        for attempt in range(min(request_count, len(tokens))):
+            token = tokens[attempt % len(tokens)]["token"]
+            
+            # Longer delay between requests (2-3 seconds)
+            delay = 2.0 + (attempt * 0.5)
+            
+            logger.info(f"Attempt {attempt + 1}: Waiting {delay}s before sending...")
+            await asyncio.sleep(delay)
+            
+            try:
+                edata = bytes.fromhex(encrypted_uid)
+                headers = {
+                    'User-Agent': "Dalvik/2.1.0 (Linux; U; Android 9; ASUS_Z01QD Build/PI)",
+                    'Connection': "Keep-Alive",
+                    'Accept-Encoding': "gzip",
+                    'Authorization': f"Bearer {token}",
+                    'Content-Type': "application/x-www-form-urlencoded",
+                    'X-Unity-Version': "2018.4.11f1",
+                    'X-GA': "v1 1",
+                    'ReleaseVersion': "OB53"
+                }
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(url, data=edata, headers=headers, timeout=aiohttp.ClientTimeout(total=20)) as response:
+                        logger.info(f"Attempt {attempt + 1}: Response status {response.status}")
+                        if response.status == 200:
+                            success_count += 1
+                            logger.info(f"✅ Attempt {attempt + 1}: Success!")
+                            break  # Stop after first success
+                        else:
+                            logger.warning(f"Attempt {attempt + 1}: Failed with status {response.status}")
+            except Exception as e:
+                logger.error(f"Attempt {attempt + 1}: Exception - {e}")
+                continue
+        
+        logger.info(f"Total successful requests: {success_count}")
         return success_count
+        
     except Exception as e:
         logger.error(f"Exception in send_multiple_requests: {e}")
         return 0
