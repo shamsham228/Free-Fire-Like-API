@@ -1,8 +1,11 @@
-Flask[async]
+Flask
 requests
-aiohttp
-googleapis-common-protos
 pycryptodome
 protobuf
+aiohttp
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+googleapis-common-protos
+gunicorn
 Werkzeug
-gunicorn==21.2.0
