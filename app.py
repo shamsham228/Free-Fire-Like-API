@@ -26,71 +26,18 @@ def load_tokens():
     except:
         return None
 
-@app.route('/token-info', methods=['GET'])
-def token_info():
-    tokens = load_tokens()
-    if not tokens:
-        return jsonify({"error": "No tokens"}), 500
-    
-    info_list = []
-    valid_count = 0
-    
-    for idx, token_obj in enumerate(tokens):
-        token = token_obj.get('token', '')
-        
-        # Skip empty tokens
-        if not token or token.strip() == "":
-            info_list.append({
-                "index": idx,
-                "error": "Empty token",
-                "expired": True
-            })
-            continue
-        
-        # Get token info
-        info = get_token_info(token)
-        if not info:
-            info_list.append({
-                "index": idx,
-                "error": "Cannot decode token",
-                "expired": True
-            })
-            continue
-        
-        # Check expiration
-        exp_time = info.get('exp', 0)
-        current_time = int(time.time())
-        is_expired = current_time > exp_time
-        hours_left = (exp_time - current_time) / 3600
-        
-        # Add to list
-        token_info_item = {
-            "index": idx,
-            "account_id": info.get('account_id'),
-            "nickname": info.get('nickname'),
-            "region": info.get('lock_region'),
-            "expired": is_expired,  # TRUE if expired, FALSE if valid
-            "hours_left": round(hours_left, 2),
-            "exp_timestamp": exp_time,
-            "current_timestamp": current_time,
-            "status": "❌ EXPIRED" if is_expired else "✅ VALID"
-        }
-        
-        info_list.append(token_info_item)
-        
-        # Count valid tokens
-        if not is_expired:
-            valid_count += 1
-    
-    return jsonify({
-        "total_tokens": len(tokens),
-        "valid_tokens": valid_count,
-        "expired_tokens": len(tokens) - valid_count,
-        "tokens": info_list,
-        "message": f"{valid_count} token(s) are VALID and ready to use"
-    })
+def get_token_info(token):
+    """Decode JWT token to get account info"""
+    try:
+        payload = token.split('.')[1]
+        payload += '=' * (-len(payload) % 4)
+        decoded = base64.urlsafe_b64decode(payload).decode('utf-8')
+        return json.loads(decoded)
+    except:
+        return None
 
 def is_token_expired(token):
+    """Check if token is expired"""
     info = get_token_info(token)
     if not info:
         return True
@@ -181,6 +128,8 @@ def send_like_request(encrypted_uid, token, url):
         logger.error(f"Like request error: {e}")
         return False
 
+# ============ ROUTES ============
+
 @app.route('/', methods=['GET'])
 def index():
     return jsonify({"status": "API running", "credit": "https://t.me/paglu_dev"})
@@ -194,32 +143,68 @@ def health():
 
 @app.route('/token-info', methods=['GET'])
 def token_info():
+    """Check token validity - show which are valid/expired"""
     tokens = load_tokens()
     if not tokens:
         return jsonify({"error": "No tokens"}), 500
     
     info_list = []
+    valid_count = 0
+    
     for idx, token_obj in enumerate(tokens):
         token = token_obj.get('token', '')
-        if not token:
-            continue
         
-        info = get_token_info(token)
-        if info:
-            exp_time = info.get('exp', 0)
-            hours_left = (exp_time - int(time.time())) / 3600
-            
+        # Skip empty tokens
+        if not token or token.strip() == "":
             info_list.append({
                 "index": idx,
-                "account_id": info.get('account_id'),
-                "nickname": info.get('nickname'),
-                "region": info.get('lock_region'),
-                "expired": is_token_expired(token),
-                "hours_left": round(hours_left, 2)
+                "error": "Empty token",
+                "expired": True,
+                "status": "❌ EMPTY"
             })
+            continue
+        
+        # Get token info
+        info = get_token_info(token)
+        if not info:
+            info_list.append({
+                "index": idx,
+                "error": "Cannot decode token",
+                "expired": True,
+                "status": "❌ INVALID"
+            })
+            continue
+        
+        # Check expiration
+        exp_time = info.get('exp', 0)
+        current_time = int(time.time())
+        is_expired = current_time > exp_time
+        hours_left = (exp_time - current_time) / 3600
+        
+        # Add to list
+        token_info_item = {
+            "index": idx,
+            "account_id": info.get('account_id'),
+            "nickname": info.get('nickname'),
+            "region": info.get('lock_region'),
+            "expired": is_expired,
+            "hours_left": round(hours_left, 2),
+            "status": "❌ EXPIRED" if is_expired else "✅ VALID"
+        }
+        
+        info_list.append(token_info_item)
+        
+        # Count valid tokens
+        if not is_expired:
+            valid_count += 1
     
-    valid = sum(1 for t in info_list if not t['expired'])
-    return jsonify({"total": len(tokens), "valid": valid, "tokens": info_list})
+    return jsonify({
+        "total_tokens": len(tokens),
+        "valid_tokens": valid_count,
+        "expired_tokens": len(tokens) - valid_count,
+        "tokens": info_list,
+        "message": f"{valid_count} token(s) are VALID and ready to use"
+    })
 
 @app.route('/like', methods=['GET'])
 def handle_requests():
