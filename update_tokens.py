@@ -14,7 +14,6 @@ TOKEN_FILE = "tokens.json"
 API_URL = "https://xtytdtyj-jwt.up.railway.app/token"
 
 def read_uidpass():
-    """Read UID and password from file"""
     try:
         with open(UIDPASS_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -23,14 +22,12 @@ def read_uidpass():
         return []
 
 def fetch_token(uid, password):
-    """Fetch token from API"""
     url = f"{API_URL}?uid={uid}&password={password}"
     try:
         logger.info(f"Fetching token for UID {uid}...")
         response = requests.get(url, timeout=10)
         response.raise_for_status()
         data = response.json()
-        
         token = data.get("token")
         if token:
             logger.info(f"✅ Token fetched for UID {uid}")
@@ -38,7 +35,6 @@ def fetch_token(uid, password):
         else:
             logger.warning(f"❌ No token for UID {uid}")
             return None
-            
     except requests.exceptions.Timeout:
         logger.error(f"❌ Timeout for UID {uid}")
         return None
@@ -47,7 +43,6 @@ def fetch_token(uid, password):
         return None
 
 def update_token_file(token_list):
-    """Update tokens.json file"""
     try:
         with open(TOKEN_FILE, "w", encoding="utf-8") as f:
             json.dump(token_list, f, ensure_ascii=False, indent=4)
