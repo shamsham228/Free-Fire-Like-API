@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
 import asyncio
+import os
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 from google.protobuf.json_format import MessageToJson
@@ -34,9 +35,9 @@ CACHE_FILE = "like_cache.json"
 # Like limits based on level (CONSERVATIVE FOR LEVEL 1-2)
 LIKE_LIMITS = {
     "level_1_2": {
-        "daily_likes": 20,      # Very limited for new accounts
-        "likes_per_uid": 5,     # Max 5 likes per target UID
-        "requests_per_call": 5  # Send 5 requests instead of 100
+        "daily_likes": 20,
+        "likes_per_uid": 5,
+        "requests_per_call": 5
     },
     "level_3_10": {
         "daily_likes": 50,
@@ -60,6 +61,10 @@ LIKE_LIMITS = {
 def load_tokens():
     """Load tokens from JSON file"""
     try:
+        if not os.path.exists(TOKEN_FILE):
+            logger.warning(f"{TOKEN_FILE} not found")
+            return None
+            
         with open(TOKEN_FILE, "r") as f:
             tokens = json.load(f)
         logger.info(f"Loaded {len(tokens)} tokens")
@@ -164,18 +169,17 @@ async def send_request(encrypted_uid, token, url, delay=0.5):
             'ReleaseVersion': "OB53"
         }
         
-        # Add delay to prevent rate limiting
         await asyncio.sleep(delay)
         
         async with aiohttp.ClientSession() as session:
             async with session.post(url, data=edata, headers=headers, timeout=aiohttp.ClientTimeout(total=20)) as response:
                 if response.status != 200:
                     logger.warning(f"Request failed with status: {response.status}")
-                    return response.status
-                return await response.text()
+                    return False
+                return True
     except Exception as e:
         logger.error(f"Exception in send_request: {e}")
-        return None
+        return False
 
 async def send_multiple_requests(uid, server_name, url, request_count):
     """Send multiple like requests with proper delays"""
@@ -185,35 +189,34 @@ async def send_multiple_requests(uid, server_name, url, request_count):
         
         if protobuf_message is None:
             logger.error("Failed to create protobuf message.")
-            return None
+            return 0
         
         encrypted_uid = encrypt_message(protobuf_message)
         if encrypted_uid is None:
             logger.error("Encryption failed.")
-            return None
+            return 0
         
         tokens = load_tokens()
         if tokens is None or len(tokens) == 0:
             logger.error("No valid tokens available.")
-            return None
+            return 0
         
         tasks = []
         for i in range(request_count):
             token = tokens[i % len(tokens)]["token"]
-            # Increase delay for level 1-2 accounts (0.5-1 second between requests)
-            delay = 0.8 + (i * 0.1)  # Progressive delay
+            delay = 0.8 + (i * 0.1)
             tasks.append(send_request(encrypted_uid, token, url, delay=delay))
         
         logger.info(f"Sending {request_count} like requests with delays...")
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        success_count = sum(1 for r in results if r and r != 404)
+        success_count = sum(1 for r in results if r is True)
         logger.info(f"Successful requests: {success_count}/{request_count}")
         
-        return results
+        return success_count
     except Exception as e:
         logger.error(f"Exception in send_multiple_requests: {e}")
-        return None
+        return 0
 
 def create_protobuf(uid):
     """Create UID protobuf"""
@@ -280,11 +283,10 @@ def decode_protobuf(binary):
         logger.error(f"Unexpected error during protobuf decoding: {e}")
         return None
 
-def check_daily_limit(token_id, current_likes):
-    """Check if daily limit is exceeded"""
+def check_daily_limit(token_id):
+    """Check daily limit"""
     cache = load_cache()
     today = datetime.now().strftime("%Y-%m-%d")
-    
     key = f"{token_id}_{today}"
     
     if key not in cache:
@@ -306,7 +308,7 @@ def update_cache(key, likes_added):
 def index():
     return jsonify({
         "credit": "https://t.me/paglu_dev",
-        "message": "Welcome to the Free Fire Like API (FIXED)",
+        "message": "Welcome to the Free Fire Like API (FIXED v2.0)",
         "status": "API is running",
         "endpoints": "/like?uid=<uid>&server_name=<server_name>",
         "example": "/like?uid=123456789&server_name=IND",
@@ -319,7 +321,7 @@ def health():
     if not tokens:
         return jsonify({'status': 'unhealthy', 'error': 'No tokens loaded'}), 500
     
-    valid_tokens = [t for t in tokens if not is_token_expired(t['token'])]
+    valid_tokens = [t for t in tokens if not is_token_expired(t.get('token', ''))]
     
     return jsonify({
         'status': 'healthy',
@@ -328,32 +330,85 @@ def health():
         'timestamp': datetime.now().isoformat()
     }), 200
 
-@app.route('/status', methods=['GET'])
-def status():
-    """Check token and account status"""
+@app.route('/token-info', methods=['GET'])
+def token_info():
+    """Check token info"""
     tokens = load_tokens()
     if not tokens:
-        return jsonify({"error": "No tokens loaded"}), 500
+        return jsonify({
+            "error": "No tokens loaded",
+            "message": "tokens.json is empty or missing"
+        }), 500
     
-    token_status = []
-    for idx, token_obj in enumerate(tokens[:3]):  # Check first 3 tokens
-        token = token_obj['token']
+    info_list = []
+    for idx, token_obj in enumerate(tokens):
+        token = token_obj.get('token', '')
+        if not token:
+            info_list.append({
+                "index": idx,
+                "error": "Empty token"
+            })
+            continue
+            
         info = get_token_info(token)
-        
         if info:
-            token_status.append({
-                "token_index": idx,
+            info_list.append({
+                "index": idx,
                 "account_id": info.get('account_id'),
                 "nickname": info.get('nickname'),
                 "region": info.get('lock_region'),
                 "expired": is_token_expired(token),
-                "expires_in_hours": (info.get('exp', 0) - int(time.time())) / 3600
+                "hours_left": round((info.get('exp', 0) - int(time.time())) / 3600, 2)
+            })
+        else:
+            info_list.append({
+                "index": idx,
+                "error": "Cannot decode token"
             })
     
     return jsonify({
         "total_tokens": len(tokens),
-        "token_status": token_status,
-        "timestamp": datetime.now().isoformat()
+        "valid_tokens": sum(1 for t in info_list if "error" not in t),
+        "tokens": info_list
+    })
+
+@app.route('/debug', methods=['GET'])
+def debug():
+    """Debug endpoint to check token status"""
+    tokens = load_tokens()
+    
+    if not tokens:
+        return jsonify({
+            "error": "No tokens loaded",
+            "tokens_file_exists": os.path.exists(TOKEN_FILE),
+            "tokens_file_size": os.path.getsize(TOKEN_FILE) if os.path.exists(TOKEN_FILE) else 0
+        }), 500
+    
+    token_status = []
+    for idx, token_obj in enumerate(tokens):
+        token = token_obj.get('token', '')
+        if not token:
+            token_status.append({"error": "Empty token", "index": idx})
+            continue
+            
+        info = get_token_info(token)
+        if not info:
+            token_status.append({"error": "Cannot decode token", "index": idx})
+            continue
+        
+        token_status.append({
+            "index": idx,
+            "account_id": info.get('account_id'),
+            "nickname": info.get('nickname'),
+            "region": info.get('lock_region'),
+            "expired": is_token_expired(token),
+            "expires_in_hours": round((info.get('exp', 0) - int(time.time())) / 3600, 2)
+        })
+    
+    return jsonify({
+        "total_tokens": len(tokens),
+        "valid_tokens": sum(1 for t in token_status if "error" not in t),
+        "token_details": token_status
     })
 
 @app.route('/like', methods=['GET'])
@@ -367,23 +422,29 @@ def handle_requests():
         if tokens is None or not tokens:
             return jsonify({
                 "error": "Failed to load tokens",
-                "message": "No valid tokens found. Run update_tokens.py",
+                "message": "No valid tokens found. tokens.json is empty",
                 "status": 0
             }), 500
         
         # Check token validity
-        valid_tokens = [t for t in tokens if not is_token_expired(t['token'])]
+        valid_tokens = [t for t in tokens if not is_token_expired(t.get('token', ''))]
         if not valid_tokens:
             return jsonify({
                 "error": "All tokens expired",
-                "message": "Please update tokens using update_tokens.py",
+                "message": "Please update tokens",
                 "status": 0
             }), 400
         
         token = valid_tokens[0]['token']
         token_info = get_token_info(token)
         
-        # Extract server_name from token or request
+        if not token_info:
+            return jsonify({
+                "error": "Cannot decode token",
+                "status": 0
+            }), 500
+        
+        # Extract server_name
         server_name = request.args.get("server_name", "").upper()
         if not server_name:
             server_name = token_info.get('lock_region', 'IND').upper()
@@ -412,24 +473,22 @@ def handle_requests():
         player_uid = int(account_info_before.get('UID', 0) or 0)
         player_name = str(account_info_before.get('PlayerNickname', 'Unknown'))
         
-        logger.info(f"Target UID: {player_uid}, Level: {player_level}, Likes Before: {before_like}")
+        logger.info(f"Target: {player_uid}, Level: {player_level}, Before: {before_like}")
         
-        # Get like limit based on account level
+        # Get like limit
         limit_config = get_like_limit(player_level)
         request_count = limit_config['requests_per_call']
         max_daily_likes = limit_config['daily_likes']
         max_likes_per_uid = limit_config['likes_per_uid']
         
-        logger.info(f"Account Level: {player_level}, Daily Limit: {max_daily_likes}, Request Count: {request_count}")
-        
         # Check daily limit
         token_id = token_info.get('account_id', 'unknown')
-        current_daily_likes, cache_key = check_daily_limit(token_id, before_like)
+        current_daily_likes, cache_key = check_daily_limit(token_id)
         
         if current_daily_likes >= max_daily_likes:
             return jsonify({
                 "error": "Daily like limit reached",
-                "message": f"Account has sent {current_daily_likes}/{max_daily_likes} likes today. Reset at 00:00 UTC",
+                "message": f"Sent {current_daily_likes}/{max_daily_likes} today",
                 "status": 0,
                 "daily_limit": max_daily_likes,
                 "current_likes": current_daily_likes
@@ -438,9 +497,9 @@ def handle_requests():
         # Check per-UID limit
         if before_like + request_count > max_likes_per_uid:
             request_count = max(1, max_likes_per_uid - before_like)
-            logger.info(f"Adjusted request count to {request_count} due to per-UID limit")
+            logger.info(f"Adjusted request count to {request_count}")
         
-        # Determine URL based on server
+        # Determine URL
         if server_name == "IND":
             url = "https://client.ind.freefiremobile.com/LikeProfile"
         elif server_name in {"BR", "US", "SAC", "NA"}:
@@ -449,23 +508,17 @@ def handle_requests():
             url = "https://clientbp.ggpolarbear.com/LikeProfile"
 
         # Send like requests
-        logger.info(f"Sending {request_count} like requests to {url}")
-        requests_sent = asyncio.run(send_multiple_requests(uid, server_name, url, request_count))
+        logger.info(f"Sending {request_count} likes...")
+        success_count = asyncio.run(send_multiple_requests(uid, server_name, url, request_count))
         
-        if requests_sent is None:
-            return jsonify({
-                "error": "Failed to send like requests",
-                "status": 0
-            }), 500
-        
-        # Wait before checking (important!)
+        # Wait before checking
         time.sleep(2)
         
         # Get after likes count
         after = make_request(encrypted_uid, server_name, token)
         if after is None:
             return jsonify({
-                "error": "Failed to retrieve player info after likes",
+                "error": "Failed to check likes after request",
                 "status": 0
             }), 500
         
@@ -479,10 +532,7 @@ def handle_requests():
         update_cache(cache_key, like_given)
         
         # Determine status
-        if like_given > 0:
-            status = 1  # Success
-        else:
-            status = 2  # Failed
+        status = 1 if like_given > 0 else 2
         
         response = {
             "credit": "https://t.me/paglu_dev",
@@ -504,39 +554,15 @@ def handle_requests():
             "max_likes_per_uid": max_likes_per_uid
         }
         
-        logger.info(f"Response: {json.dumps(response, indent=2)}")
-        
+        logger.info(f"Response: Status={status}, Likes={like_given}")
         return jsonify(response)
         
     except Exception as e:
-        logger.error(f"Error processing request: {e}", exc_info=True)
+        logger.error(f"Error: {e}", exc_info=True)
         return jsonify({
             "error": str(e),
             "status": 0
         }), 500
-
-@app.route('/token-info', methods=['GET'])
-def token_info():
-    """Check token info"""
-    tokens = load_tokens()
-    if not tokens:
-        return jsonify({"error": "No tokens"}), 500
-    
-    info_list = []
-    for idx, token_obj in enumerate(tokens):
-        token = token_obj['token']
-        info = get_token_info(token)
-        if info:
-            info_list.append({
-                "index": idx,
-                "account_id": info.get('account_id'),
-                "nickname": info.get('nickname'),
-                "region": info.get('lock_region'),
-                "expired": is_token_expired(token),
-                "hours_left": (info.get('exp', 0) - int(time.time())) / 3600
-            })
-    
-    return jsonify({"tokens": info_list})
 
 if __name__ == '__main__':
     app.run(debug=True, use_reloader=False)
