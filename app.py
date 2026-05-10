@@ -136,30 +136,6 @@ def create_protobuf_message(user_id, region):
         logger.error(f"Error creating protobuf message: {e}")
         return None
 
-async def send_request(encrypted_uid, token, url, delay=0.5):
-    try:
-        edata = bytes.fromhex(encrypted_uid)
-        headers = {
-            'User-Agent': "Dalvik/2.1.0 (Linux; U; Android 9; ASUS_Z01QD Build/PI)",
-            'Connection': "Keep-Alive",
-            'Accept-Encoding': "gzip",
-            'Authorization': f"Bearer {token}",
-            'Content-Type': "application/x-www-form-urlencoded",
-            'X-Unity-Version': "2018.4.11f1",
-            'X-GA': "v1 1",
-            'ReleaseVersion': "OB53"
-        }
-        await asyncio.sleep(delay)
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, data=edata, headers=headers, timeout=aiohttp.ClientTimeout(total=20)) as response:
-                if response.status != 200:
-                    logger.warning(f"Request failed with status: {response.status}")
-                    return False
-                return True
-    except Exception as e:
-        logger.error(f"Exception in send_request: {e}")
-        return False
-
 async def send_multiple_requests(uid, server_name, url, request_count):
     """Send multiple like requests with retries"""
     try:
@@ -181,11 +157,8 @@ async def send_multiple_requests(uid, server_name, url, request_count):
         
         success_count = 0
         
-        # Try each token until one succeeds
         for attempt in range(min(request_count, len(tokens))):
             token = tokens[attempt % len(tokens)]["token"]
-            
-            # Longer delay between requests (2-3 seconds)
             delay = 2.0 + (attempt * 0.5)
             
             logger.info(f"Attempt {attempt + 1}: Waiting {delay}s before sending...")
@@ -210,7 +183,7 @@ async def send_multiple_requests(uid, server_name, url, request_count):
                         if response.status == 200:
                             success_count += 1
                             logger.info(f"✅ Attempt {attempt + 1}: Success!")
-                            break  # Stop after first success
+                            break
                         else:
                             logger.warning(f"Attempt {attempt + 1}: Failed with status {response.status}")
             except Exception as e:
@@ -407,8 +380,7 @@ def handle_requests():
                 "status": 0
             }), 400
         
-        import random
-token = random.choice(valid_tokens)['token']
+        token = random.choice(valid_tokens)['token']
         token_info = get_token_info(token)
         
         if not token_info:
@@ -445,10 +417,8 @@ token = random.choice(valid_tokens)['token']
         request_count = limit_config['requests_per_call']
         max_daily_likes = limit_config['daily_likes']
         
-        # Get guest account ID
         token_account_id = token_info.get('account_id')
         
-        # Check if this guest account already liked this UID today
         if has_liked_today(token_account_id, player_uid):
             return jsonify({
                 "error": "Already liked",
@@ -458,7 +428,6 @@ token = random.choice(valid_tokens)['token']
                 "target_uid": player_uid
             }), 429
         
-        # Check daily limit (total likes from this guest account today)
         cache = load_cache()
         today = datetime.now().strftime("%Y-%m-%d")
         daily_count_key = f"daily_{token_account_id}_{today}"
@@ -471,7 +440,6 @@ token = random.choice(valid_tokens)['token']
                 "status": 0
             }), 429
         
-        # Determine URL
         if server_name == "IND":
             url = "https://client.ind.freefiremobile.com/LikeProfile"
         elif server_name in {"BR", "US", "SAC", "NA"}:
@@ -480,14 +448,14 @@ token = random.choice(valid_tokens)['token']
             url = "https://clientbp.ggpolarbear.com/LikeProfile"
 
         logger.info(f"Sending {request_count} like(s)...")
-success_count = asyncio.run(send_multiple_requests(uid, server_name, url, request_count))
-
-if success_count == 0:
-    logger.warning("No successful requests. Waiting 5 seconds before checking...")
-    time.sleep(5)
-else:
-    logger.info(f"Successful! Waiting 3 seconds before checking likes...")
-    time.sleep(3)
+        success_count = asyncio.run(send_multiple_requests(uid, server_name, url, request_count))
+        
+        if success_count == 0:
+            logger.warning("No successful requests. Waiting 5 seconds before checking...")
+            time.sleep(5)
+        else:
+            logger.info(f"Successful! Waiting 3 seconds before checking likes...")
+            time.sleep(3)
         
         after = make_request(encrypted_uid, server_name, token)
         if after is None:
@@ -504,11 +472,8 @@ else:
         
         status = 1 if like_given > 0 else 2
         
-        # Mark that this guest account liked this UID
         if like_given > 0:
             mark_liked(token_account_id, player_uid)
-            
-            # Update daily total count for this guest account
             cache[daily_count_key] = current_daily_likes + like_given
             save_cache(cache)
         
