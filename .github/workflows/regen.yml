@@ -1,0 +1,31 @@
+name: Regenerate Tokens Now
+
+on:
+  workflow_dispatch:
+
+jobs:
+  regenerate:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install requests
+
+      - name: Regenerate tokens
+        run: python regenerate_tokens.py
+
+      - name: Commit and push
+        run: |
+          git config --global user.email "action@github.com"
+          git config --global user.name "GitHub Action"
+          git add tokens.json
+          git diff --quiet && git diff --staged --quiet || (git commit -m "🔄 Regenerate tokens" && git push)
