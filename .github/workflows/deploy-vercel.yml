@@ -1,0 +1,28 @@
+name: Auto Deploy to Vercel
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'tokens.json'
+
+jobs:
+  trigger-vercel:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Wait for commit
+        run: sleep 5
+
+      - name: Trigger Vercel Deployment
+        run: |
+          echo "🚀 Triggering Vercel deployment..."
+          curl -X POST "${{ secrets.VERCEL_DEPLOY_HOOK }}"
+          echo "✅ Deploy hook called successfully"
+
+      - name: Wait for deployment
+        run: |
+          echo "⏳ Waiting 30 seconds for Vercel to deploy..."
+          sleep 30
+          echo "✅ Deployment should be complete"
