@@ -4,6 +4,8 @@ import time
 import base64
 import requests
 import logging
+import asyncio
+import aiohttp
 import os
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
@@ -11,7 +13,9 @@ import binascii
 import like_pb2
 import like_count_pb2
 import uid_generator_pb2
+from google.protobuf.message import DecodeError
 from google.protobuf.json_format import MessageToJson
+from datetime import datetime
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -138,7 +142,13 @@ def send_like_request(encrypted_uid, token, url):
 
 @app.route('/', methods=['GET'])
 def index():
-    return jsonify({"status": "✅ API Running", "credit": "https://t.me/paglu_dev"})
+    return jsonify({
+        "credit": "https://t.me/paglu_dev",
+        "message": "Welcome to the Free Fire Like API",
+        "status": "API is running",
+        "endpoints": "/like?uid=<uid> or /like?uid=<uid>&server_name=<server_name>",
+        "example": "/like?uid=123456789 or /like?uid=123456789&server_name=bd"
+    })
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -152,61 +162,71 @@ def health():
 
 @app.route('/token-info', methods=['GET'])
 def token_info():
-    """Check token validity"""
-    tokens = load_tokens()
-    if not tokens:
-        return jsonify({"error": "No tokens"}), 500
-    
-    info_list = []
-    valid_count = 0
-    
-    for idx, token_obj in enumerate(tokens):
-        token = token_obj.get('token', '')
+    """Check token validity and details"""
+    try:
+        tokens = load_tokens()
+        if not tokens:
+            return jsonify({"error": "No tokens loaded"}), 500
         
-        if not token or token.strip() == "":
-            info_list.append({
-                "index": idx,
-                "status": "❌ EMPTY",
-                "expired": True
-            })
-            continue
+        info_list = []
+        valid_count = 0
         
-        info = get_token_info(token)
-        if not info:
-            info_list.append({
-                "index": idx,
-                "status": "❌ INVALID",
-                "expired": True
-            })
-            continue
+        for idx, token_obj in enumerate(tokens):
+            token = token_obj.get('token', '')
+            
+            if not token:
+                info_list.append({
+                    "index": idx,
+                    "status": "❌ EMPTY",
+                    "expired": True
+                })
+                continue
+            
+            try:
+                # Decode token
+                payload = token.split('.')[1]
+                payload += '=' * (-len(payload) % 4)
+                decoded = base64.urlsafe_b64decode(payload).decode('utf-8')
+                info = json.loads(decoded)
+                
+                exp_time = info.get('exp', 0)
+                current_time = int(time.time())
+                is_expired = current_time > exp_time
+                hours_left = (exp_time - current_time) / 3600
+                
+                token_info_item = {
+                    "index": idx,
+                    "account_id": info.get('account_id'),
+                    "nickname": info.get('nickname'),
+                    "region": info.get('lock_region'),
+                    "expired": is_expired,
+                    "hours_left": round(hours_left, 2),
+                    "status": "❌ EXPIRED" if is_expired else "✅ VALID"
+                }
+                
+                if not is_expired:
+                    valid_count += 1
+                    
+            except Exception as e:
+                token_info_item = {
+                    "index": idx,
+                    "status": "❌ INVALID",
+                    "error": str(e)[:50],
+                    "expired": True
+                }
+            
+            info_list.append(token_info_item)
         
-        exp_time = info.get('exp', 0)
-        current_time = int(time.time())
-        is_expired = current_time > exp_time
-        hours_left = (exp_time - current_time) / 3600
+        return jsonify({
+            "total_tokens": len(tokens),
+            "valid_tokens": valid_count,
+            "expired_tokens": len(tokens) - valid_count,
+            "tokens": info_list,
+            "timestamp": datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
+        })
         
-        token_info_item = {
-            "index": idx,
-            "account_id": info.get('account_id'),
-            "nickname": info.get('nickname'),
-            "region": info.get('lock_region'),
-            "expired": is_expired,
-            "hours_left": round(hours_left, 2),
-            "status": "❌ EXPIRED" if is_expired else "✅ VALID"
-        }
-        
-        info_list.append(token_info_item)
-        
-        if not is_expired:
-            valid_count += 1
-    
-    return jsonify({
-        "total_tokens": len(tokens),
-        "valid_tokens": valid_count,
-        "expired_tokens": len(tokens) - valid_count,
-        "tokens": info_list,
-        "message": f"✅ {valid_count} token(s) VALID"
-    })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/like', methods=['GET'])
 def handle_requests():
