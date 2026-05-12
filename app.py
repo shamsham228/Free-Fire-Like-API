@@ -140,6 +140,43 @@ def send_like_request(encrypted_uid, token, url):
 
 # ============ ROUTES ============
 
+@app.route('/test-ff-api', methods=['GET'])
+def test_ff_api():
+    """Test current Free Fire API endpoints"""
+    
+    endpoints = [
+        "https://client.ind.freefiremobile.com/GetPlayerPersonalShow",
+        "https://client.ind.freefiremobile.com/LikeProfile",
+        "https://clientbp.ggpolarbear.com/GetPlayerPersonalShow",
+        "https://client.us.freefiremobile.com/GetPlayerPersonalShow"
+    ]
+    
+    results = []
+    
+    for endpoint in endpoints:
+        try:
+            # Test with basic request
+            response = requests.get(endpoint, timeout=5)
+            results.append({
+                "endpoint": endpoint,
+                "status": response.status_code,
+                "reachable": True,
+                "response_preview": response.text[:100] if response.text else "empty"
+            })
+        except Exception as e:
+            results.append({
+                "endpoint": endpoint,
+                "status": 0,
+                "reachable": False,
+                "error": str(e)
+            })
+    
+    return jsonify({
+        "timestamp": datetime.utcnow().isoformat(),
+        "endpoints_tested": len(endpoints),
+        "results": results
+    })
+
 @app.route('/', methods=['GET'])
 def index():
     return jsonify({
