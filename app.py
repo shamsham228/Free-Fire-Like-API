@@ -220,6 +220,62 @@ def index():
     })
 
 
+# Add to app.py for testing
+@app.route('/test-all-guests')
+def test_all_guests():
+    """Test which guest accounts work"""
+    
+    guest_uids = [
+        "4791121514", "4801190221", "4800217784", "4800253941",
+        "4801420983", "4801452310", "4801618821", "4801629659",
+        "4801640033", "4801651164", "4801725579", "4803358978"
+    ]
+    
+    results = []
+    tokens = load_tokens()
+    
+    if not tokens:
+        return jsonify({"error": "No tokens"}), 500
+    
+    token = tokens[0]['token']
+    
+    for uid in guest_uids:
+        try:
+            encrypted = enc(uid)
+            response = make_request(encrypted, "IND", token)
+            
+            if response:
+                data = json.loads(MessageToJson(response))
+                account_info = data.get('AccountInfo', {})
+                
+                results.append({
+                    "uid": uid,
+                    "status": "✅ WORKING",
+                    "name": account_info.get('PlayerNickname', 'Unknown'),
+                    "level": account_info.get('Level', 0),
+                    "likes": account_info.get('Likes', 0)
+                })
+            else:
+                results.append({
+                    "uid": uid,
+                    "status": "❌ FAILED"
+                })
+        except Exception as e:
+            results.append({
+                "uid": uid,
+                "status": "❌ ERROR",
+                "error": str(e)[:50]
+            })
+    
+    working = [r for r in results if r['status'] == "✅ WORKING"]
+    
+    return jsonify({
+        "total_tested": len(guest_uids),
+        "working_count": len(working),
+        "results": results,
+        "recommendation": "Use working UIDs for testing"
+    })
+
 @app.route('/find-account-id')
 def find_account_id():
     """Try to find account ID from profile UID"""
