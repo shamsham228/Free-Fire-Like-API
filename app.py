@@ -219,6 +219,63 @@ def index():
         }
     })
 
+
+@app.route('/find-account-id')
+def find_account_id():
+    """Try to find account ID from profile UID"""
+    profile_uid = request.args.get("uid", "1457219434")
+    
+    try:
+        tokens = load_tokens()
+        if not tokens:
+            return jsonify({"error": "No tokens"}), 500
+        
+        token = tokens[0]['token']
+        
+        # Try multiple conversions
+        test_uids = [
+            profile_uid,                          # Original
+            str(int(profile_uid) * 10 + 8),      # Common conversion 1
+            str(int(profile_uid) + 14217275304), # Based on pattern
+            "1" + profile_uid,                   # Add leading 1
+        ]
+        
+        results = []
+        
+        for test_uid in test_uids:
+            encrypted = enc(test_uid)
+            if not encrypted:
+                continue
+            
+            response = make_request(encrypted, "IND", token)
+            
+            results.append({
+                "test_uid": test_uid,
+                "found": response is not None,
+                "status": "✅ FOUND" if response else "❌ Not found"
+            })
+        
+        # Also check all our token account IDs
+        token_accounts = []
+        for token_obj in tokens[:5]:  # First 5 only
+            info = get_token_info(token_obj.get('token', ''))
+            if info:
+                token_accounts.append({
+                    "account_id": info.get('account_id'),
+                    "external_uid": info.get('external_uid'),
+                    "nickname": info.get('nickname')
+                })
+        
+        return jsonify({
+            "searched_profile_uid": profile_uid,
+            "test_results": results,
+            "our_token_accounts": token_accounts,
+            "recommendation": "Try UIDs that returned ✅ FOUND"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/decode-uid')
 def decode_uid():
     """Help users find their real account ID"""
