@@ -220,6 +220,67 @@ def index():
     })
 
 
+# Add to app.py
+@app.route('/test-account-ids')
+def test_account_ids():
+    """Test with 11-digit account IDs instead of external UIDs"""
+    
+    account_ids = [
+        "15624989316", "15646271815", "15644204732", "15644271911",
+        "15646632857", "15646715513", "15647208313", "15647246530",
+        "15647283555", "15647323557", "15647561606", "15651198005"
+    ]
+    
+    results = []
+    tokens = load_tokens()
+    
+    if not tokens:
+        return jsonify({"error": "No tokens"}), 500
+    
+    token = tokens[0]['token']
+    
+    for acc_id in account_ids:
+        try:
+            encrypted = enc(acc_id)
+            if not encrypted:
+                results.append({"account_id": acc_id, "status": "❌ Encryption failed"})
+                continue
+                
+            response = make_request(encrypted, "IND", token)
+            
+            if response:
+                data = json.loads(MessageToJson(response))
+                account_info = data.get('AccountInfo', {})
+                
+                results.append({
+                    "account_id": acc_id,
+                    "status": "✅ WORKING",
+                    "name": account_info.get('PlayerNickname', 'Unknown'),
+                    "level": account_info.get('Level', 0),
+                    "likes": account_info.get('Likes', 0)
+                })
+            else:
+                results.append({
+                    "account_id": acc_id,
+                    "status": "❌ FAILED"
+                })
+        except Exception as e:
+            results.append({
+                "account_id": acc_id,
+                "status": "❌ ERROR",
+                "error": str(e)[:50]
+            })
+    
+    working = [r for r in results if r.get('status') == "✅ WORKING"]
+    
+    return jsonify({
+        "note": "Testing with 11-digit Account IDs",
+        "total_tested": len(account_ids),
+        "working_count": len(working),
+        "results": results
+    })
+    
+
 # Add to app.py for testing
 @app.route('/test-all-guests')
 def test_all_guests():
