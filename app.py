@@ -228,6 +228,56 @@ def token_info():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
+@app.route('/get-account-id', methods=['GET'])
+def get_account_id():
+    """Convert Profile ID to Account ID"""
+    profile_id = request.args.get("profile_id") or request.args.get("uid")
+    
+    if not profile_id:
+        return jsonify({"error": "profile_id parameter required"}), 400
+    
+    try:
+        # Profile ID is 11 digits, Account ID is 10 digits
+        # Profile ID format: 1XXXXXXXXXX (starts with 1)
+        # Account ID format: XXXXXXXXXX (remove leading 1)
+        
+        profile_id_str = str(profile_id).strip()
+        
+        # Check if it's already an account ID (10 digits)
+        if len(profile_id_str) == 10:
+            return jsonify({
+                "profile_id": profile_id_str,
+                "account_id": profile_id_str,
+                "message": "This is already an Account ID",
+                "note": "Use this ID for API calls"
+            })
+        
+        # Check if it's a profile ID (11 digits starting with 1)
+        if len(profile_id_str) == 11 and profile_id_str.startswith('1'):
+            account_id = profile_id_str[1:]  # Remove first digit
+            return jsonify({
+                "profile_id": profile_id_str,
+                "account_id": account_id,
+                "message": "Conversion successful",
+                "note": "Use the account_id for API calls",
+                "example": f"/like?uid={account_id}&server_name=IND"
+            })
+        
+        # Invalid format
+        return jsonify({
+            "error": "Invalid ID format",
+            "received": profile_id_str,
+            "expected": "11 digits (Profile ID) or 10 digits (Account ID)",
+            "example_profile": "14572194346",
+            "example_account": "4572194346"
+        }), 400
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+
 @app.route('/like', methods=['GET'])
 def handle_requests():
     uid = request.args.get("uid")
