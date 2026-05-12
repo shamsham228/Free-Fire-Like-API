@@ -232,50 +232,102 @@ def token_info():
 def handle_requests():
     uid = request.args.get("uid")
     if not uid:
-        return jsonify({"error": "UID required"}), 400
+        return jsonify({"error": "UID is required"}), 400
 
     try:
         tokens = load_tokens()
-        if not tokens:
-            return jsonify({"error": "No tokens", "status": 0}), 500
+        if tokens is None or not tokens:
+            return jsonify({
+                "error": "No tokens available. Please contact admin.",
+                "status": 0
+            }), 500
         
-        # Find first valid token
-        valid_token = None
-        for t in tokens:
-            if not is_token_expired(t.get('token', '')):
-                valid_token = t.get('token')
-                break
-        
-        if not valid_token:
-            return jsonify({"error": "All tokens expired", "status": 0}), 400
-        
-        token_info = get_token_info(valid_token)
+        # Get server_name from query or detect from token
         server_name = request.args.get("server_name", "").upper()
-        if not server_name:
-            server_name = token_info.get('lock_region', 'IND').upper()
         
-        logger.info(f"🎯 Like request: UID={uid}, Server={server_name}")
+        # Try to get token with matching region
+        selected_token = None
+        token_region = None
+        
+        if server_name:
+            # Find token with matching region
+            for token_obj in tokens:
+                token = token_obj.get('token', '')
+                try:
+                    payload = token.split('.')[1]
+                    payload += '=' * (-len(payload) % 4)
+                    decoded_payload = base64.urlsafe_b64decode(payload).decode('utf-8')
+                    parsed_payload = json.loads(decoded_payload)
+                    region = parsed_payload.get('lock_region', '').upper()
+                    
+                    if region == server_name:
+                        selected_token = token
+                        token_region = region
+                        break
+                except:
+                    continue
+        
+        # If no matching token found, use first available
+        if not selected_token:
+            selected_token = tokens[0]['token']
+            try:
+                payload = selected_token.split('.')[1]
+                payload += '=' * (-len(payload) % 4)
+                decoded_payload = base64.urlsafe_b64decode(payload).decode('utf-8')
+                parsed_payload = json.loads(decoded_payload)
+                token_region = parsed_payload.get('lock_region', 'IND').upper()
+            except:
+                token_region = 'IND'
+        
+        # Use detected region if not provided
+        if not server_name:
+            server_name = token_region
+        
+        app.logger.info(f"🎯 Request: UID={uid}, Server={server_name}, Token Region={token_region}")
+        
+        # Check region compatibility
+        if server_name != token_region:
+            return jsonify({
+                "error": f"Region mismatch: Token is {token_region}, requested {server_name}. Use /like {token_region} {uid}",
+                "status": 0,
+                "suggestion": f"Try: /like {token_region} {uid}"
+            }), 400
         
         encrypted_uid = enc(uid)
-        if not encrypted_uid:
-            return jsonify({"error": "Encryption failed", "status": 0}), 500
+        if encrypted_uid is None:
+            return jsonify({"error": "Encryption of UID failed.", "status": 0}), 500
 
-        # Get before
-        logger.info(f"📖 Getting player info...")
-        before = make_request(encrypted_uid, server_name, valid_token)
+        # Get before likes count
+        app.logger.info(f"📖 Fetching player info...")
+        before = make_request(encrypted_uid, server_name, selected_token)
+        
         if before is None:
-            return jsonify({"error": "Failed to fetch player info", "status": 0}), 500
+            return jsonify({
+                "error": f"Cannot fetch player info. Possible reasons:\n• UID {uid} doesn't exist\n• UID is not in {server_name} region\n• Try different region",
+                "status": 0,
+                "uid": uid,
+                "region": server_name
+            }), 500
         
         data_before = json.loads(MessageToJson(before))
         account_info = data_before.get('AccountInfo', {})
+        
+        if not account_info:
+            return jsonify({
+                "error": f"Invalid UID or UID not found in {server_name} region",
+                "status": 0,
+                "uid": uid,
+                "region": server_name
+            }), 404
+        
         before_like = int(account_info.get('Likes', 0) or 0)
         player_uid = int(account_info.get('UID', 0) or 0)
         player_name = str(account_info.get('PlayerNickname', 'Unknown'))
         player_level = int(account_info.get('Level', 0) or 0)
         
-        logger.info(f"👤 Player: {player_name}, Level: {player_level}, Likes: {before_like}")
+        app.logger.info(f"👤 Player: {player_name}, Level: {player_level}, Likes: {before_like}")
 
-        # Send like
+        # Determine URL based on server
         if server_name == "IND":
             url = "https://client.ind.freefiremobile.com/LikeProfile"
         elif server_name in {"BR", "US", "SAC", "NA"}:
@@ -283,33 +335,29 @@ def handle_requests():
         else:
             url = "https://clientbp.ggpolarbear.com/LikeProfile"
 
-        logger.info(f"💌 Sending like...")
-        time.sleep(1)
-        success = send_like_request(encrypted_uid, valid_token, url)
+        # Send like requests
+        app.logger.info(f"💌 Sending likes...")
+        requests_sent = asyncio.run(send_multiple_requests(uid, server_name, url))
+        app.logger.info(f"📨 Requests completed")
+
+        # Get after likes count
+        time.sleep(2)  # Wait for likes to process
+        after = make_request(encrypted_uid, server_name, selected_token)
         
-        if not success:
-            logger.warning("⚠️ Like send failed")
-            return jsonify({
-                "LikesGivenByAPI": 0,
-                "status": 2,
-                "message": "Failed to send like"
-            })
-        
-        logger.info(f"✅ Like sent, waiting...")
-        time.sleep(2)
-        
-        # Get after
-        after = make_request(encrypted_uid, server_name, valid_token)
         if after is None:
-            return jsonify({"status": 2, "message": "Failed to check likes"}), 500
+            return jsonify({
+                "error": "Failed to verify likes. But likes may have been sent.",
+                "status": 2
+            }), 500
         
         data_after = json.loads(MessageToJson(after))
-        after_like = int(data_after.get('AccountInfo', {}).get('Likes', 0) or 0)
+        after_account_info = data_after.get('AccountInfo', {})
+        after_like = int(after_account_info.get('Likes', 0) or 0)
         
         like_given = after_like - before_like
         status = 1 if like_given > 0 else 2
         
-        logger.info(f"✅ Result: Before={before_like}, After={after_like}, Given={like_given}")
+        app.logger.info(f"✅ Result: Before={before_like}, After={after_like}, Given={like_given}")
         
         return jsonify({
             "credit": "https://t.me/paglu_dev",
@@ -321,12 +369,14 @@ def handle_requests():
             "Region": server_name,
             "UID": player_uid,
             "status": status,
-            "message": "✅ Like sent!" if status == 1 else "❌ Failed"
+            "message": "✅ Likes sent successfully!" if status == 1 else "⚠️ No likes added (may already have max)"
         })
         
     except Exception as e:
-        logger.error(f"Error: {e}", exc_info=True)
-        return jsonify({"error": str(e), "status": 0}), 500
-
+        app.logger.error(f"❌ Error processing request: {e}", exc_info=True)
+        return jsonify({
+            "error": str(e)[:200],
+            "status": 0
+        }), 500
 if __name__ == '__main__':
     app.run()
