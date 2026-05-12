@@ -219,6 +219,51 @@ def index():
         }
     })
 
+@app.route('/decode-uid')
+def decode_uid():
+    """Help users find their real account ID"""
+    
+    try:
+        tokens = load_tokens()
+        if not tokens:
+            return jsonify({"error": "No tokens"}), 500
+        
+        # Try to find the UID in our tokens
+        uid_search = request.args.get("search", "")
+        
+        results = []
+        
+        for token_obj in tokens:
+            token = token_obj.get('token', '')
+            info = get_token_info(token)
+            
+            if info:
+                account_id = info.get('account_id')
+                external_uid = info.get('external_uid')
+                nickname = info.get('nickname')
+                
+                results.append({
+                    "account_id": account_id,
+                    "external_uid": external_uid,
+                    "nickname": nickname,
+                    "account_id_str": str(account_id),
+                    "external_uid_str": str(external_uid)
+                })
+        
+        return jsonify({
+            "message": "Free Fire has multiple ID types",
+            "explanation": {
+                "account_id": "Used by API (10-11 digits)",
+                "external_uid": "Guest login ID (10 digits)",
+                "profile_uid": "Shown in game (may differ)"
+            },
+            "your_tokens": results,
+            "note": "Use 'account_id' for API calls"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/health')
 def health():
     tokens = load_tokens()
