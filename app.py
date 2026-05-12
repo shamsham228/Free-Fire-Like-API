@@ -23,6 +23,8 @@ logger = logging.getLogger(__name__)
 
 TOKEN_FILE = "tokens.json"
 
+# ===== TOKEN MANAGEMENT =====
+
 def load_tokens():
     try:
         if not os.path.exists(TOKEN_FILE):
@@ -54,6 +56,8 @@ def is_token_expired(token):
     exp_time = info.get('exp', 0)
     return int(time.time()) > exp_time
 
+# ===== ENCRYPTION =====
+
 def encrypt_message(plaintext):
     try:
         key = b'Yg&tc%DEuh6%Zc^8'
@@ -82,32 +86,49 @@ def enc(uid):
         return None
     return encrypt_message(protobuf_data)
 
+# ===== API REQUESTS (UPDATED WITH OB53 HEADERS) =====
+
 def make_request(encrypt, server_name, token):
+    """Fetch player info with updated OB53 headers"""
     try:
+        # Select endpoint based on region
         if server_name == "IND":
             url = "https://client.ind.freefiremobile.com/GetPlayerPersonalShow"
+            host = "client.ind.freefiremobile.com"
         elif server_name in {"BR", "US", "SAC", "NA"}:
             url = "https://client.us.freefiremobile.com/GetPlayerPersonalShow"
+            host = "client.us.freefiremobile.com"
         else:
             url = "https://clientbp.ggpolarbear.com/GetPlayerPersonalShow"
-        
-        logger.info(f"📤 Request to: {url}")
+            host = "clientbp.ggpolarbear.com"
         
         edata = bytes.fromhex(encrypt)
+        
+        # ✅ UPDATED HEADERS - OB53 (May 2026)
         headers = {
-            'User-Agent': "Dalvik/2.1.0 (Linux; U; Android 9; ASUS_Z01QD Build/PI)",
+            'Accept': '*/*',
+            'Accept-Encoding': 'deflate, gzip',
+            'User-Agent': 'UnityPlayer/2022.3.47f1 (UnityWebRequest/1.0, libcurl/8.5.0-DEV)',
             'Authorization': f"Bearer {token}",
-            'Content-Type': "application/x-www-form-urlencoded",
-            'X-Unity-Version': "2018.4.11f1",
-            'ReleaseVersion': "OB53"
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Host': host,
+            'ReleaseVersion': 'OB53',
+            'X-GA': 'v1 1',
+            'X-Unity-Version': '2022.3.47f1',
+            'Connection': 'Keep-Alive'
         }
+        
+        logger.info(f"🔗 Request: {url}")
+        logger.info(f"📦 Body: {len(edata)} bytes")
         
         response = requests.post(url, data=edata, headers=headers, verify=False, timeout=15)
         
-        logger.info(f"📊 Response: {response.status_code}")
+        logger.info(f"📊 Status: {response.status_code}")
+        logger.info(f"📦 Response: {len(response.content)} bytes")
         
         if response.status_code != 200:
-            logger.error(f"❌ Status {response.status_code}")
+            logger.error(f"❌ HTTP {response.status_code}")
+            logger.error(f"Response: {response.text[:200]}")
             return None
         
         binary = bytes.fromhex(response.content.hex())
@@ -116,94 +137,106 @@ def make_request(encrypt, server_name, token):
         
         logger.info(f"✅ Success")
         return items
+        
     except Exception as e:
-        logger.error(f"Request error: {e}")
+        logger.error(f"Request error: {e}", exc_info=True)
         return None
 
-def send_like_request(encrypted_uid, token, url):
-    """Send single like request"""
+async def send_request(encrypted_uid, token, url):
+    """Send async like request with updated headers"""
     try:
         edata = bytes.fromhex(encrypted_uid)
+        
+        # ✅ UPDATED HEADERS - OB53
         headers = {
-            'User-Agent': "Dalvik/2.1.0 (Linux; U; Android 9; ASUS_Z01QD Build/PI)",
+            'Accept': '*/*',
+            'Accept-Encoding': 'deflate, gzip',
+            'User-Agent': 'UnityPlayer/2022.3.47f1 (UnityWebRequest/1.0, libcurl/8.5.0-DEV)',
             'Authorization': f"Bearer {token}",
-            'Content-Type': "application/x-www-form-urlencoded",
-            'X-Unity-Version': "2018.4.11f1",
-            'ReleaseVersion': "OB53"
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'X-Unity-Version': '2022.3.47f1',
+            'X-GA': 'v1 1',
+            'ReleaseVersion': 'OB53'
         }
         
-        response = requests.post(url, data=edata, headers=headers, verify=False, timeout=15)
-        return response.status_code == 200
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, data=edata, headers=headers, ssl=False) as response:
+                return response.status == 200
+                
     except Exception as e:
-        logger.error(f"Like error: {e}")
+        logger.error(f"Async request error: {e}")
         return False
 
-# ============ ROUTES ============
+async def send_multiple_requests(uid, server_name, url):
+    """Send 100 like requests asynchronously"""
+    try:
+        region = server_name
+        
+        # Create protobuf for like (different from profile fetch)
+        message = like_pb2.like()
+        message.uid = int(uid)
+        message.region = region
+        protobuf_message = message.SerializeToString()
+        
+        encrypted_uid = encrypt_message(protobuf_message)
+        if encrypted_uid is None:
+            logger.error("Like encryption failed")
+            return None
+        
+        tokens = load_tokens()
+        if not tokens:
+            return None
+        
+        tasks = []
+        for i in range(100):
+            token = tokens[i % len(tokens)]["token"]
+            tasks.append(send_request(encrypted_uid, token, url))
+        
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        success_count = sum(1 for r in results if r is True)
+        
+        logger.info(f"📨 Sent {success_count}/100 like requests")
+        return results
+        
+    except Exception as e:
+        logger.error(f"Multi-request error: {e}")
+        return None
 
-@app.route('/test-ff-api', methods=['GET'])
-def test_ff_api():
-    """Test current Free Fire API endpoints"""
-    
-    endpoints = [
-        "https://client.ind.freefiremobile.com/GetPlayerPersonalShow",
-        "https://client.ind.freefiremobile.com/LikeProfile",
-        "https://clientbp.ggpolarbear.com/GetPlayerPersonalShow",
-        "https://client.us.freefiremobile.com/GetPlayerPersonalShow"
-    ]
-    
-    results = []
-    
-    for endpoint in endpoints:
-        try:
-            # Test with basic request
-            response = requests.get(endpoint, timeout=5)
-            results.append({
-                "endpoint": endpoint,
-                "status": response.status_code,
-                "reachable": True,
-                "response_preview": response.text[:100] if response.text else "empty"
-            })
-        except Exception as e:
-            results.append({
-                "endpoint": endpoint,
-                "status": 0,
-                "reachable": False,
-                "error": str(e)
-            })
-    
-    return jsonify({
-        "timestamp": datetime.utcnow().isoformat(),
-        "endpoints_tested": len(endpoints),
-        "results": results
-    })
+# ===== ROUTES =====
 
-@app.route('/', methods=['GET'])
+@app.route('/')
 def index():
     return jsonify({
         "credit": "https://t.me/paglu_dev",
-        "message": "Welcome to the Free Fire Like API",
-        "status": "API is running",
-        "endpoints": "/like?uid=<uid> or /like?uid=<uid>&server_name=<server_name>",
-        "example": "/like?uid=123456789 or /like?uid=123456789&server_name=bd"
+        "message": "Free Fire Like API - OB53 Updated",
+        "status": "✅ Running",
+        "version": "2.1 (May 2026)",
+        "endpoints": {
+            "/like": "Send likes - ?uid=<uid>&server_name=<region>",
+            "/token-info": "Check token status",
+            "/health": "Health check",
+            "/test-encryption": "Test encryption output"
+        }
     })
 
-@app.route('/health', methods=['GET'])
+@app.route('/health')
 def health():
     tokens = load_tokens()
     valid_count = sum(1 for t in tokens if not is_token_expired(t.get('token', '')))
     return jsonify({
         'status': 'healthy' if valid_count > 0 else 'unhealthy',
         'total_tokens': len(tokens),
-        'valid_tokens': valid_count
+        'valid_tokens': valid_count,
+        'timestamp': datetime.utcnow().isoformat()
     }), 200 if valid_count > 0 else 500
 
-@app.route('/token-info', methods=['GET'])
+@app.route('/token-info')
 def token_info():
-    """Check token validity and details"""
+    """Check all tokens status"""
     try:
         tokens = load_tokens()
         if not tokens:
-            return jsonify({"error": "No tokens loaded"}), 500
+            return jsonify({"error": "No tokens"}), 500
         
         info_list = []
         valid_count = 0
@@ -212,15 +245,10 @@ def token_info():
             token = token_obj.get('token', '')
             
             if not token:
-                info_list.append({
-                    "index": idx,
-                    "status": "❌ EMPTY",
-                    "expired": True
-                })
+                info_list.append({"index": idx, "status": "❌ EMPTY", "expired": True})
                 continue
             
             try:
-                # Decode token
                 payload = token.split('.')[1]
                 payload += '=' * (-len(payload) % 4)
                 decoded = base64.urlsafe_b64decode(payload).decode('utf-8')
@@ -236,6 +264,7 @@ def token_info():
                     "account_id": info.get('account_id'),
                     "nickname": info.get('nickname'),
                     "region": info.get('lock_region'),
+                    "client_version": info.get('client_version'),
                     "expired": is_expired,
                     "hours_left": round(hours_left, 2),
                     "status": "❌ EXPIRED" if is_expired else "✅ VALID"
@@ -265,135 +294,92 @@ def token_info():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
-@app.route('/get-account-id', methods=['GET'])
-def get_account_id():
-    """Convert Profile ID to Account ID"""
-    profile_id = request.args.get("profile_id") or request.args.get("uid")
-    
-    if not profile_id:
-        return jsonify({"error": "profile_id parameter required"}), 400
+@app.route('/test-encryption')
+def test_encryption():
+    """Test encryption output"""
+    uid = request.args.get("uid", "1457219434")
     
     try:
-        # Profile ID is 11 digits, Account ID is 10 digits
-        # Profile ID format: 1XXXXXXXXXX (starts with 1)
-        # Account ID format: XXXXXXXXXX (remove leading 1)
+        encrypted = enc(uid)
         
-        profile_id_str = str(profile_id).strip()
-        
-        # Check if it's already an account ID (10 digits)
-        if len(profile_id_str) == 10:
-            return jsonify({
-                "profile_id": profile_id_str,
-                "account_id": profile_id_str,
-                "message": "This is already an Account ID",
-                "note": "Use this ID for API calls"
-            })
-        
-        # Check if it's a profile ID (11 digits starting with 1)
-        if len(profile_id_str) == 11 and profile_id_str.startswith('1'):
-            account_id = profile_id_str[1:]  # Remove first digit
-            return jsonify({
-                "profile_id": profile_id_str,
-                "account_id": account_id,
-                "message": "Conversion successful",
-                "note": "Use the account_id for API calls",
-                "example": f"/like?uid={account_id}&server_name=IND"
-            })
-        
-        # Invalid format
         return jsonify({
-            "error": "Invalid ID format",
-            "received": profile_id_str,
-            "expected": "11 digits (Profile ID) or 10 digits (Account ID)",
-            "example_profile": "14572194346",
-            "example_account": "4572194346"
-        }), 400
-        
+            "uid": uid,
+            "encrypted_hex": encrypted,
+            "encrypted_length": len(encrypted) // 2 if encrypted else 0,
+            "note": "Compare with captured traffic",
+            "expected_length": 16
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
-
-@app.route('/like', methods=['GET'])
+@app.route('/like')
 def handle_requests():
+    """Main like endpoint"""
     uid = request.args.get("uid")
     if not uid:
-        return jsonify({"error": "UID is required"}), 400
+        return jsonify({"error": "UID required"}), 400
 
     try:
-        tokens = load_tokens()
-        if tokens is None or not tokens:
+        # Validate UID (must be 10 digits)
+        if not uid.isdigit() or len(uid) != 10:
             return jsonify({
-                "error": "No tokens available. Please contact admin.",
+                "error": f"Invalid UID format. Must be 10 digits. Got: {uid} ({len(uid)} digits)",
                 "status": 0
-            }), 500
+            }), 400
         
-        # Get server_name from query or detect from token
+        tokens = load_tokens()
+        if not tokens:
+            return jsonify({"error": "No tokens available", "status": 0}), 500
+        
+        # Get region
         server_name = request.args.get("server_name", "").upper()
         
-        # Try to get token with matching region
+        # Find matching token
         selected_token = None
         token_region = None
         
-        if server_name:
-            # Find token with matching region
-            for token_obj in tokens:
-                token = token_obj.get('token', '')
-                try:
-                    payload = token.split('.')[1]
-                    payload += '=' * (-len(payload) % 4)
-                    decoded_payload = base64.urlsafe_b64decode(payload).decode('utf-8')
-                    parsed_payload = json.loads(decoded_payload)
-                    region = parsed_payload.get('lock_region', '').upper()
-                    
-                    if region == server_name:
-                        selected_token = token
-                        token_region = region
-                        break
-                except:
-                    continue
+        for token_obj in tokens:
+            token = token_obj.get('token', '')
+            if not token:
+                continue
+                
+            info = get_token_info(token)
+            if not info:
+                continue
+                
+            region = info.get('lock_region', '').upper()
+            
+            if server_name and region == server_name:
+                selected_token = token
+                token_region = region
+                break
+            elif not selected_token:
+                selected_token = token
+                token_region = region
         
-        # If no matching token found, use first available
         if not selected_token:
-            selected_token = tokens[0]['token']
-            try:
-                payload = selected_token.split('.')[1]
-                payload += '=' * (-len(payload) % 4)
-                decoded_payload = base64.urlsafe_b64decode(payload).decode('utf-8')
-                parsed_payload = json.loads(decoded_payload)
-                token_region = parsed_payload.get('lock_region', 'IND').upper()
-            except:
-                token_region = 'IND'
+            return jsonify({"error": "No valid tokens", "status": 0}), 500
         
-        # Use detected region if not provided
-        if not server_name:
-            server_name = token_region
+        server_name = server_name or token_region
         
-        app.logger.info(f"🎯 Request: UID={uid}, Server={server_name}, Token Region={token_region}")
+        logger.info(f"🎯 Request: UID={uid}, Server={server_name}, Token Region={token_region}")
         
-        # Check region compatibility
-        if server_name != token_region:
-            return jsonify({
-                "error": f"Region mismatch: Token is {token_region}, requested {server_name}. Use /like {token_region} {uid}",
-                "status": 0,
-                "suggestion": f"Try: /like {token_region} {uid}"
-            }), 400
-        
+        # Encrypt UID
         encrypted_uid = enc(uid)
-        if encrypted_uid is None:
-            return jsonify({"error": "Encryption of UID failed.", "status": 0}), 500
+        if not encrypted_uid:
+            return jsonify({"error": "Encryption failed", "status": 0}), 500
 
-        # Get before likes count
-        app.logger.info(f"📖 Fetching player info...")
+        # Get before likes
+        logger.info(f"📖 Fetching player info...")
         before = make_request(encrypted_uid, server_name, selected_token)
         
         if before is None:
             return jsonify({
-                "error": f"Cannot fetch player info. Possible reasons:\n• UID {uid} doesn't exist\n• UID is not in {server_name} region\n• Try different region",
+                "error": f"Cannot fetch player info for UID {uid} in {server_name} region",
                 "status": 0,
                 "uid": uid,
-                "region": server_name
+                "region": server_name,
+                "note": "Check if UID exists and is in correct region"
             }), 500
         
         data_before = json.loads(MessageToJson(before))
@@ -401,10 +387,8 @@ def handle_requests():
         
         if not account_info:
             return jsonify({
-                "error": f"Invalid UID or UID not found in {server_name} region",
-                "status": 0,
-                "uid": uid,
-                "region": server_name
+                "error": f"UID {uid} not found in {server_name} region",
+                "status": 0
             }), 404
         
         before_like = int(account_info.get('Likes', 0) or 0)
@@ -412,9 +396,9 @@ def handle_requests():
         player_name = str(account_info.get('PlayerNickname', 'Unknown'))
         player_level = int(account_info.get('Level', 0) or 0)
         
-        app.logger.info(f"👤 Player: {player_name}, Level: {player_level}, Likes: {before_like}")
+        logger.info(f"👤 {player_name} (Lv.{player_level}) - Likes: {before_like}")
 
-        # Determine URL based on server
+        # Send likes
         if server_name == "IND":
             url = "https://client.ind.freefiremobile.com/LikeProfile"
         elif server_name in {"BR", "US", "SAC", "NA"}:
@@ -422,29 +406,26 @@ def handle_requests():
         else:
             url = "https://clientbp.ggpolarbear.com/LikeProfile"
 
-        # Send like requests
-        app.logger.info(f"💌 Sending likes...")
-        requests_sent = asyncio.run(send_multiple_requests(uid, server_name, url))
-        app.logger.info(f"📨 Requests completed")
-
-        # Get after likes count
-        time.sleep(2)  # Wait for likes to process
+        logger.info(f"💌 Sending likes...")
+        await_result = asyncio.run(send_multiple_requests(uid, server_name, url))
+        
+        # Get after likes
+        time.sleep(2)
         after = make_request(encrypted_uid, server_name, selected_token)
         
         if after is None:
             return jsonify({
-                "error": "Failed to verify likes. But likes may have been sent.",
+                "message": "Likes sent but verification failed",
                 "status": 2
             }), 500
         
         data_after = json.loads(MessageToJson(after))
-        after_account_info = data_after.get('AccountInfo', {})
-        after_like = int(after_account_info.get('Likes', 0) or 0)
+        after_like = int(data_after.get('AccountInfo', {}).get('Likes', 0) or 0)
         
         like_given = after_like - before_like
         status = 1 if like_given > 0 else 2
         
-        app.logger.info(f"✅ Result: Before={before_like}, After={after_like}, Given={like_given}")
+        logger.info(f"✅ Before={before_like}, After={after_like}, Given={like_given}")
         
         return jsonify({
             "credit": "https://t.me/paglu_dev",
@@ -456,14 +437,12 @@ def handle_requests():
             "Region": server_name,
             "UID": player_uid,
             "status": status,
-            "message": "✅ Likes sent successfully!" if status == 1 else "⚠️ No likes added (may already have max)"
+            "message": "✅ Success!" if status == 1 else "⚠️ No likes added"
         })
         
     except Exception as e:
-        app.logger.error(f"❌ Error processing request: {e}", exc_info=True)
-        return jsonify({
-            "error": str(e)[:200],
-            "status": 0
-        }), 500
+        logger.error(f"❌ Error: {e}", exc_info=True)
+        return jsonify({"error": str(e)[:200], "status": 0}), 500
+
 if __name__ == '__main__':
-    app.run()
+    app.run(debug=True)
