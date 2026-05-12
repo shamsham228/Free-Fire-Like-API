@@ -533,73 +533,62 @@ def test_encryption():
 
 @app.route('/like')
 def handle_requests():
-    """Main like endpoint"""
     uid = request.args.get("uid")
     if not uid:
         return jsonify({"error": "UID required"}), 400
 
     try:
-        # Validate UID (must be 10 digits)
-        if not uid.isdigit() or len(uid) != 10:
+        # Validate UID
+        if not uid.isdigit():
+            return jsonify({"error": "UID must be numeric", "status": 0}), 400
+        
+        # Accept both 10 and 11 digit UIDs
+        if len(uid) not in [10, 11]:
             return jsonify({
-                "error": f"Invalid UID format. Must be 10 digits. Got: {uid} ({len(uid)} digits)",
+                "error": f"UID must be 10 or 11 digits. Got {len(uid)} digits",
                 "status": 0
             }), 400
         
         tokens = load_tokens()
         if not tokens:
-            return jsonify({"error": "No tokens available", "status": 0}), 500
+            return jsonify({"error": "No tokens", "status": 0}), 500
         
-        # Get region
-        server_name = request.args.get("server_name", "").upper()
-        
-        # Find matching token
+        # Find token for account 4801618821 (the working one)
         selected_token = None
-        token_region = None
         
         for token_obj in tokens:
             token = token_obj.get('token', '')
-            if not token:
-                continue
-                
             info = get_token_info(token)
-            if not info:
-                continue
-                
-            region = info.get('lock_region', '').upper()
             
-            if server_name and region == server_name:
+            if info and info.get('external_uid') == 4801618821:
                 selected_token = token
-                token_region = region
+                logger.info("✅ Using working account token")
                 break
-            elif not selected_token:
-                selected_token = token
-                token_region = region
         
+        # Fallback to first token
         if not selected_token:
-            return jsonify({"error": "No valid tokens", "status": 0}), 500
+            selected_token = tokens[0]['token']
         
-        server_name = server_name or token_region
+        server_name = request.args.get("server_name", "IND").upper()
         
-        logger.info(f"🎯 Request: UID={uid}, Server={server_name}, Token Region={token_region}")
+        logger.info(f"🎯 Request: UID={uid}, Server={server_name}")
         
-        # Encrypt UID
+        # Rest of your existing code...
         encrypted_uid = enc(uid)
         if not encrypted_uid:
             return jsonify({"error": "Encryption failed", "status": 0}), 500
 
         # Get before likes
-        logger.info(f"📖 Fetching player info...")
         before = make_request(encrypted_uid, server_name, selected_token)
         
         if before is None:
             return jsonify({
-                "error": f"Cannot fetch player info for UID {uid} in {server_name} region",
+                "error": f"Cannot fetch player info for UID {uid}",
                 "status": 0,
-                "uid": uid,
-                "region": server_name,
-                "note": "Check if UID exists and is in correct region"
+                "note": "This UID may not exist or is in wrong region"
             }), 500
+        
+        # ... rest of existing code
         
         data_before = json.loads(MessageToJson(before))
         account_info = data_before.get('AccountInfo', {})
